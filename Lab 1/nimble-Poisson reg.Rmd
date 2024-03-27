@@ -1,0 +1,276 @@
+---
+title: "Nimble - Poisson Regression"
+output:
+  html_document:
+    theme: flatly
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup,message=FALSE}
+library(knitr)
+library(kableExtra)
+library(MASS)                 # Ship data
+library(nimble, warn.conflicts = FALSE)
+library(coda)                 # MCMC diagnostics
+library(mcmcplots)            # MCMC plot
+```
+
+## Poisson Regression with offset
+
+-   $Y_i|X_i \sim Poisson(\mu_i)$
+
+-   $log(\mu_i)=\eta_i=\beta_0+\beta_1x_{1i}+log(t_i)=(\beta_0+log(t_i))+\beta_1x_{1i}$
+
+-   $\mu_i=exp(\eta_i)=exp(\beta_0+\beta_1x_{1i}+log(t_i))=exp(\beta_0+\beta_1x_{1i})t_i$
+
+```{r}
+##############
+# Simulation #
+##############
+rm(list = ls())
+set.seed(1)
+n <- 1000                                   # number of observations
+x <- rnorm(n)                               # explanatory variables
+X <- cbind(1,x)                             # design matrix
+true_betas <- c(0.5,1.5)                    # coefficients
+
+t <- sample(1:10,n,replace=T)               # offset
+
+eta <- X %*% true_betas+log(t)              # plus offset term
+mu  <- exp(eta)
+y   <- rpois(n,mu) 
+
+# histogram
+tmp<-table(y)/n*100
+barplot(tmp,col="skyblue",ylab="Percent",xlab="Count")
+
+```
+
+Setting
+
+| Parameter | True |
+|:---------:|:----:|
+| $\beta_0$ | 0.5  |
+| $\beta_1$ | 1.5  |
+
+### Frequentist Approach
+
+```{r}
+# Frequentist approach
+m <- glm(y~x,family = "poisson",offset=log(t)) # allow intercept
+summary(m)
+
+```
+
+## NIMBLE Procedure
+
+### Step 1: Build Model
+
+-   Write the Poisson model:
+
+-   $Y_i|X_i \sim Poisson(\mu_i)$
+
+-   $log(\mu_i)=\eta_i=\beta_0+\beta_1x_{1i}+log(t_i)$; or
+
+-   $\mu_i=exp(\eta_i)=exp(\beta_0+\beta_1x_{1i}+log(t_i))=exp(\beta_0+\beta_1x_{1i})t_i$
+
+```{r}
+#######################
+# Model specification #
+#######################
+
+# use bugs code in nimbleCode
+
+code <- nimbleCode({
+  for(i in 1:n) {
+    y[i] ~ dpois(mu[i])
+    #mu[i] <- exp(beta0+beta1*x[i]+log(t[i]))
+    log(mu[i])<- beta0+beta1*x[i]+log(t[i])
+  }
+  beta0 ~ dnorm(0, sd = 100)
+  beta1 ~ dnorm(0, sd = 100)
+})
+
+constants <- list(n = n)
+data <- list(y = y,x = x, t=t)              # Need to add offset data
+inits <- list(beta0=0, beta1 = 0)
+# nimbleModel: check code specification is correct
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+### Step 2: Configure Model
+
+-   If we want to calculate WAIC, specify **enableWAIC = TRUE** in configuration.
+
+-   Default sampler: random walk sampler (scalar adaptive Metropolis-Hastings sampling with a normal proposal distribution)
+
+```{r}
+modelConf <- configureMCMC(model, enableWAIC = TRUE,print = TRUE)
+modelConf$printSamplers()      # Defalut in RW sampler
+```
+
+### Step 3: Compile Model
+
+-   After specifying model, initial values can be changed. Don't need to run function **nimbleModel()** again.
+
+```{r}
+Cmodel <- compileNimble(model)
+```
+
+### Step 4: Build MCMC
+
+```{r}
+modelMCMC <- buildMCMC(modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+```
+
+### Step 5: Run MCMC
+
+```{r}
+niter <- 1500
+burn  <- 500
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,
+                   summary = TRUE, WAIC = TRUE)
+
+mcmc.out <- samples$samples
+head(mcmc.out)
+```
+
+```{r}
+out<-samples$summary
+kable(out,digits = 4, format = "html") %>% kable_styling(full_width = F)
+```
+
+```{r}
+mcmc.out <- samples$samples
+target <- c("beta0","beta1")
+mbeta <- colMeans(mcmc.out)[target]
+qbeta <- apply(mcmc.out,2,quantile,c(0.025,0.975))[,target]
+
+```
+
+```{r echo=FALSE}
+tmp2 <- data.frame(true=true_betas,
+                   est = mbeta,
+                   lci=qbeta[1,],
+                   uci=qbeta[2,])
+row.names(tmp2) <- c("$\\beta_{0}$","$\\beta_{1}$")
+kable(tmp2,digits = 4, format = "html",
+      col.names = c("True",
+                    "MCMC Estimate",
+                    "Lower CI",
+                    "Upper CI")) %>%
+                     kable_styling(full_width = F)
+```
+
+-   Show WAIC
+
+```{r}
+# Show WAIC
+samples$WAIC
+```
+
+-   Plot trace plot
+
+```{r}
+par(mfrow = c(1, 2), mai = c(.6, .4, .1, .2))
+plot(mcmc.out[ , "beta0"], type = "l", xlab = "iteration",
+     ylab = expression(beta[1]),col="green")
+abline(h=mean(mcmc.out[ , "beta0"]))
+plot(mcmc.out[ , "beta1"], type = "l", xlab = "iteration",
+     ylab = expression(beta[2]),col="green")
+abline(h=mean(mcmc.out[ , "beta1"]))
+```
+
+-   Plot MCMC information (traceplot, density plot,...rtc) from MCMC package.
+
+```{r,eval=FALSE}
+mcmcplot(mcmc.out,filename = "output-Poi")
+```
+
+# Case Study
+
+-   Ship data from MASS package
+
+-   Outcome ($Y$): Number of damage incidence.
+
+-   Variables ($X$): Type (A-E), year of construction (60-64, 65-69, 70-74, 75-79).
+
+-   Offset variable: aggregate months of service. The longer ship service, the higher incidence happens.
+
+```{r}
+data(ships)
+ships$yearbuilt <- as.factor(ships$year)
+fit_ships_poisson <- glm(incidents ~ type + yearbuilt,
+                         offset = log(service), family = poisson,
+                         data = ships, subset = (service != 0))
+summary(fit_ships_poisson)
+```
+
+```{r}
+d <- subset(ships,service != 0)
+n  <- nrow(d)              # num of observations 
+y  <- d$incidents          # outcome
+x1 <- 1*(d$type=="B")      # dummy coding: ship type (ref="A")
+x2 <- 1*(d$type=="C")
+x3 <- 1*(d$type=="D")
+x4 <- 1*(d$type=="E")
+x5 <- 1*(d$year==65)     # period (ref="60")
+x6 <- 1*(d$year==70)
+x7 <- 1*(d$year==75)
+t  <- d$service
+X  <- cbind(x1,x2,x3,x4,x5,x6,x7)
+p  <- ncol(X)              # number of parameters (not include intercept)
+```
+
+### Nimble
+
+```{r}
+#######################
+# Model specification #
+#######################
+
+# use bugs code in nimbleCode
+
+code <- nimbleCode({
+  for(i in 1:n) {
+    y[i] ~ dpois(mu[i])
+    log(mu[i]) <- beta0+inprod(X[i,1:p],beta[1:p])+log(t[i])}
+
+  beta0 ~ dnorm(0,sd=100)
+  for (j in 1:p){beta[j] ~ dnorm(0,sd=100)}
+})
+
+constants <- list(n = n,p=p)
+data <- list(y = y,X = X, t=t)
+inits <- list(beta0=0, beta=rep(0,p))
+# nimbleModel: check code specification is correct
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+```{r}
+modelConf <- configureMCMC(model, print = TRUE, enableWAIC = TRUE)
+
+modelConf$printSamplers()
+
+Cmodel <- compileNimble(model)
+
+modelMCMC <- buildMCMC(modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+
+
+niter <- 2000
+burn  <- 1000
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,
+                   WAIC = TRUE, summary = TRUE)
+mcmc.out <- samples$samples
+```
+
+```{r}
+out<-samples$summary
+rownames(out)<-c("typeB","typeC","typeD","typeE","yearbuilt65","yearbuilt70","yearbuilt75","Intercept")
+kable(out,digits = 4, format = "html") %>% kable_styling(full_width = F)
+```

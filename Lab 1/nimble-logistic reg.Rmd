@@ -1,0 +1,273 @@
+---
+title: "Nimble - Logistic Regression"
+output:
+  html_document:
+    theme: flatly
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup,message=FALSE}
+library(knitr)
+library(kableExtra)
+library(nimble, warn.conflicts = FALSE)
+library(coda)                 # MCMC diagnostics
+library(mcmcplots)            # MCMC plot
+```
+
+## Logistic Regression
+
+-   $Y_i|x_i \sim Bernoulli(\pi_i)$
+
+-   $logit(\pi_i)=\eta_i=\beta_0+\beta_1x_{1i}+\beta_2x_{2i}$
+
+-   $\pi_i=P(y_i=1)=\frac{exp(\eta_i)}{1+exp(\eta_1)}$
+
+```{r}
+##############
+# Simulation #
+##############
+rm(list = ls())
+set.seed(1)
+n  <- 500                              # number of observations
+x1 <- rnorm(n)                         # explanatory variables
+x2 <- rbinom(n,1,0.5)
+X  <- cbind(1,x1,x2)                   # design matrix
+k  <- ncol(X)                          # number of variables
+true_betas <- c(1,1.5,-2)              # coefficients
+
+eta  <- X %*% true_betas               # linear predictors
+prob <- exp(eta)/(1+exp(eta))         
+y    <- rbinom(n,1,prob)               # data
+#table(y)/n                            # check proportion of 1's 
+```
+
+Setting
+
+| Parameter | True |
+|:---------:|:----:|
+| $\beta_0$ | 1.0  |
+| $\beta_1$ | 1.5  |
+| $\beta_2$ |  -2  |
+
+### Frequentist Approach
+
+```{r}
+# Frequentist approach
+m <- glm(y~x1+x2,family = "binomial") # allow intercept
+summary(m)
+```
+
+## NIMBLE Procedure
+
+### Step 1: Build Model
+
+-   Two ways to write logistic model and probit model.
+
+-   $Y_i|x_i \sim Bernoulli(\pi_i)$
+
+-   $logit(\pi_i)=\beta_0+\beta_1x_{1i}+\beta_2x_{2i}$; or
+
+-   $\pi_i=ilogit(\beta_0+\beta_1x_{1i}+\beta_2x_{2i})$; equivalently $\pi_i=\frac{exp(\beta_0+\beta_1x_{1i}+\beta_2x_{2i})}{1+exp(\beta_0+\beta_1x_{1i}+\beta_2x_{2i})}$
+
+-   $\Phi^{-1}(\pi_i)=\beta_0+\beta_1x_{1i}+\beta_2x_{2i}$; or
+
+-   $\pi_i=\Phi(\beta_0+\beta_1x_{1i}+\beta_2x_{2i})$
+
+-   NOTE: Data is generated from binomial distribution with logit link so probit model won't show the true $\beta$s.
+
+```{r}
+#######################
+# Model specification #
+#######################
+code <- nimbleCode({
+  for(i in 1:n) {
+     y[i] ~ dbin(prob=p[i],size=1)
+    ### 1. logit model ###
+    logit(p[i]) <- inprod(beta[1:k],X[i,1:k])   # logit fn
+    #p[i] <- ilogit(inprod(beta[1:k],X[i,1:k])) # inverse logit fn
+  
+    ### 2. probit model ###
+    #probit(p[i]) <- inprod(beta[1:k],X[i,1:k]) # probit fn
+    #p[i] <- iprobit(inprod(beta[1:k],X[i,1:k]))         # inverse probit fn
+  }
+    
+  # specify prior for all betas
+  for (j in 1:k){beta[j]~dnorm(0,sd=100)}  
+})
+
+constants <- list(n = n, k=k)     # constants
+data <- list(y = y, X=X)          # data
+inits <- list(beta=rep(0,k))      # initial values
+# nimbleModel: check code specification is correct
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+### Step 2: Configure Model
+
+-   If we want to calculate WAIC, specify **enableWAIC = TRUE** in configuration.
+
+-   Default sampler: random walk sampler (scalar adaptive Metropolis-Hastings sampling with a normal proposal distribution)
+
+```{r}
+modelConf <- configureMCMC(model, enableWAIC = TRUE,print = TRUE)
+modelConf$printSamplers()      # Defalut in RW sampler
+```
+
+### Step 3: Compile Model
+
+-   After specifying model, initial values can be changed. Don't need to run function **nimbleModel()** again.
+
+```{r}
+Cmodel <- compileNimble(model)
+Cmodel$beta[1]<-1
+Cmodel$beta[2]<--1
+Cmodel$beta[3]<-0
+```
+
+### Step 4: Build MCMC
+
+```{r}
+modelMCMC <- buildMCMC(modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+```
+
+### Step 5: Run MCMC
+
+```{r}
+niter <- 1500
+burn  <- 0
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,
+                   summary = TRUE, WAIC = TRUE)
+
+mcmc.out <- samples$samples
+head(mcmc.out)
+
+# length(apply(mcmc.out,2,unique))
+```
+
+```{r}
+out<-samples$summary
+kable(out,digits = 4, format = "html") %>% kable_styling(full_width = F)
+```
+
+```{r}
+mcmc.out <- samples$samples
+target <- c("beta[1]","beta[2]","beta[3]")
+mbeta <- colMeans(mcmc.out)[target]
+qbeta <- apply(mcmc.out,2,quantile,c(0.025,0.975))[,target]
+
+```
+
+```{r echo=FALSE}
+tmp2 <- data.frame(true=true_betas,
+                   est = mbeta,
+                   lci=qbeta[1,],
+                   uci=qbeta[2,])
+row.names(tmp2) <- c("$\\beta_{1}$","$\\beta_{2}$","$\\beta_{3}$")
+kable(tmp2,digits = 4, format = "html",
+      col.names = c("True",
+                    "MCMC Estimate",
+                    "Lower CI",
+                    "Upper CI")) %>%
+                     kable_styling(full_width = F)
+```
+
+-   Show WAIC
+
+```{r}
+# Show WAIC
+samples$WAIC
+```
+
+-   Plot MCMC information (traceplot, density plot,...rtc) from MCMC package.
+
+```{r,eval=FALSE}
+mcmcplot(mcmc.out,filename = "output-log")
+```
+
+## Change Samplers for $\beta$s
+
+-   Default sampler: random walk sampler (scalar adaptive Metropolis-Hastings sampling with a normal proposal distribution)
+
+-   check **help(samplers),** In help windows, show every sampler we can use to update parameters **(do not include "sampler\_")**. [[Link](https://www.r-bloggers.com/2017/05/better-block-sampling-in-mcmc-with-the-automated-factor-slice-sampler/)]
+
+-   Suggestions: before adding samplers, removing the samplers first!
+
+```{r,eval=FALSE}
+help(samplers)
+```
+
+### 1.type="RW_block"
+
+-   Adaptive Metropolis-Hastings algorithm with a multivariate normal proposal distribution (Roberts and Sahu, 1997)
+
+```{r}
+RW_modelConf <- configureMCMC(model, enableWAIC = TRUE,print = TRUE)
+RW_modelConf$removeSamplers()
+RW_modelConf$addSampler(c("beta[1]","beta[2]","beta[3]"),type="RW_block")
+RW_modelConf$printSamplers()
+```
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+Cmodel <- compileNimble(model)
+
+modelMCMC <- buildMCMC(RW_modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,
+                   summary = TRUE, WAIC = TRUE)
+out<-samples$summary
+kable(out,digits = 4, format = "html",caption="RW_ block Sampler") %>% kable_styling(full_width = F)
+```
+
+### 2. type="slice"
+
+-   Cannot use slice sampler on more than one target node.
+
+```{r}
+SLICE_modelConf <- configureMCMC(model, enableWAIC = TRUE,print = TRUE)
+SLICE_modelConf$removeSamplers(c("beta[3]"))
+SLICE_modelConf$addSampler(c("beta[3]"),type="slice")
+SLICE_modelConf$printSamplers()
+```
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+Cmodel <- compileNimble(model)
+
+modelMCMC <- buildMCMC(SLICE_modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,
+                   summary = TRUE, WAIC = TRUE)
+out<-samples$summary
+kable(out,digits = 4, format = "html",,caption="Slice Sampler") %>% kable_styling(full_width = F)
+```
+
+### 3. type="AF_slice"
+
+-   Automated factor slice sampler conducts a slice sampling algorithm on one or more model nodes.
+
+```{r}
+AF_SLICE_modelConf <- configureMCMC(model, enableWAIC = TRUE,print = TRUE)
+AF_SLICE_modelConf$removeSamplers()
+AF_SLICE_modelConf$addSampler(c("beta[1]","beta[2]","beta[3]"),type="AF_slice")
+AF_SLICE_modelConf$printSamplers()
+```
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+Cmodel <- compileNimble(model)
+
+modelMCMC <- buildMCMC(AF_SLICE_modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,
+                   summary = TRUE, WAIC = TRUE)
+out<-samples$summary
+kable(out,digits = 4, format = "html",
+      caption="Automated Factor Slice Sampler") %>% kable_styling(full_width = F)
+```
