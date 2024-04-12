@@ -1,0 +1,382 @@
+---
+title: "Spatial Normal Model"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup,warning=FALSE,message=FALSE}
+library(nimble, warn.conflicts = FALSE)
+library(mcmcplots)
+library(PICBayes)     # Sotuh Carolina adjacency matrix
+library(spam)
+library(tmap)         # Create a map
+library(tigris)    
+library(RColorBrewer)
+library(dplyr)
+```
+
+# Simulated Spatial Map
+
+```{r simdata0, echo=FALSE,warning=FALSE,message=FALSE,results = "hide"}
+set.seed(032210)
+n<-46 				                   # Number of county
+nis<-sample(1:250,n,T)           # Number of patient in each county
+id<-rep(1:n,nis)                 # County ID
+N<-length(id)                    # Number of total patients  
+
+# Covariate
+x1<-rnorm(N)
+x2<-rbinom(N,1,0.5)
+X<-cbind(1,x1,x2)
+p<-ncol(X)
+
+# Fixed Effect Parms
+beta<-c(0.75,-0.65,.20)
+
+# Spatial random effect
+data(C)
+A<-C
+m<-apply(A,1,sum)	                              # No. neighbors
+Q<-as.spam(diag(m))-as.spam(A) + diag(.0001,n)
+
+varb<-truevarb<-4
+taub<-truetaub<-1/varb                          # precision in ICAR
+covb<-varb*solve(Q)      
+b<-c(mvtnorm::rmvnorm(1,sigma=covb))                 
+trueb<-b-mean(b)                               # Center for identifiability 
+
+# Error variance
+sigmae<-4
+
+# Response
+mu<-X%*%beta+rep(b-mean(b),nis)
+y<-rnorm(N,mu,sqrt(sigmae))
+
+dat<-data.frame(countyid=1:n,
+                ymean=tapply(y,id,mean))
+
+scfips<-c("45001","45003","45005","45007","45009",
+          "45011","45013","45015","45017","45019","45021",
+          "45023","45025","45027","45029","45031","45033",
+          "45035","45037","45039","45041","45043","45045",
+          "45047","45049","45051","45053","45055","45057",
+          "45059","45061","45063","45065","45067","45069",
+          "45071","45073","45075","45077","45079","45081",
+          "45083","45085","45087","45089","45091")
+
+dat$fips<-scfips
+dat$GEOID<-as.character(dat$fips)
+sc_counties_map <- counties(state = c('South Carolina'))
+```
+
+```{r simdata02, echo=FALSE}
+sc_data <- left_join(sc_counties_map, dat, by = 'GEOID')
+pal <- brewer.pal(5,"Blues")  # specify the palette colors
+tm_shape(sc_data)+
+  tm_fill(c("ymean"), midpoint = c(NA), title = c(expression(paste(""))), palette = pal, style = "quantile")+
+  tm_facets(free.scales = TRUE, nrow = 1)+
+  tm_layout(title = "Quintile Map",
+            title.snap.to.legend = TRUE,
+            title.size = 0.8,
+            title.position = c("right", "bottom"),
+            legend.outside = FALSE,
+            legend.position = c(0.75, 0.88),
+            legend.text.size = 0.5,
+            main.title.fontface = "bold",
+            main.title.position = "center")+
+  tm_borders(alpha = 0.3, lwd = 1)
+```
+
+# Model Specification 
+
+$$Y_{ij}=\beta_0+\beta_1x_{1i}+\beta_2x_{2i}+s_i+e_i, ~~~i=1,\ldots,46;j=1,\ldots,n_i$$
+
+- Let $Y_{ij}$ be the outcome of $j$-th patient ($j=1,\ldots,n_i$) in county $i$ $(i=1,\ldots,46)$ 
+
+- _Intrinsic Conditional Auto-Regressive (ICAR)_ models
+
+  - $\boldsymbol{s}=(s_1,s_2,\ldots,s_i,\ldots,s_{46})^T_{46\times1}$, where $s_i$ is the spatial effect specific to county $i$
+  
+  - $s_i|s_j,j\ne i \sim \text{N}\left(\frac{\sum_{i\sim j}s_i}{d_{i}},\frac{1}{d_{i}\tau}\right)$
+
+  - $d_i$ denotes the number of neighbor of county $i$
+  
+  - $i \sim j$ denotes the county $i$ and $j$ are neighbor
+  
+- Besag (1974) proved that the joint distribution of $\boldsymbol{s}$ 
+
+  - $\boldsymbol{s}=(s_1,s_2,\ldots,s_i,\ldots,s_{46})^T \sim \text{N}(0,(\tau\boldsymbol{Q})^{-1})$
+  
+  - $\tau$ is a precision for Gaussian ICAR
+  
+  - $\boldsymbol{Q}=\boldsymbol{D}-\boldsymbol{A}$, 
+    
+    - $\boldsymbol{D}$ is a $n\times n$ diagonal matrix, where the entries $\{i,i\}$ are number of neighbor of county $i$
+    
+    - $\boldsymbol{A}$ is a $n\times n$ adjacency matrix, where entries $\{i,i\}$ are $0$ and the off-diagonal elements are $1$ if counties $i$ and $j$ are neighbors and $0$ otherwise. 
+    
+    - For the identifiability: $\sum_i\boldsymbol{s}_i=0$
+
+
+# Toy Example
+
+```{r toy,echo=FALSE}
+fig<-"C:\\Users\\chech\\OneDrive - Medical University of South Carolina\\Programs\\Github\\Bayesian-Nimble\\example lab 2\\Rmarkdown\\Figure\\"
+knitr::include_graphics(paste(fig,"Adj Example.png",sep = ""))
+```
+
+- $\boldsymbol{D}=\begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 2 & 0 & 0 \\ 0 & 0 & 2 & 0 \\ 0&0&0&1\end{bmatrix}$
+
+- $\boldsymbol{A}=\begin{bmatrix} 0 & 1 & 0 & 0 \\ 1 & 0 & 1 & 0 \\ 0 & 1 & 0 & 1 \\ 0&0&1&0\end{bmatrix}$
+
+- $\boldsymbol{Q}=\boldsymbol{D}-\boldsymbol{A}$
+
+- Adjacency vector$=(\underbrace{B}_A,\underbrace{A,C}_{B},\underbrace{B,D}_{C},\underbrace{C}_{D})$ (for the later use)
+
+# Simulate Data
+
+Simulate data from Equation: 
+
+$$Y_{ij}=\beta_0+\beta_1x_{1i}+\beta_2x_{2i}+s_i+e_i, ~~~i=1,\ldots,46;j=1,\ldots,n_i,$$
+
+where 
+- $(\beta_0,\beta_1,\beta_2)^T=(-0.25,0.65,-0.50)^T$;
+
+- $\boldsymbol{s}\sim \text{ICAR}(\tau=0.5)$
+
+- $e_{ij} \overset{iid}{\sim}\text{N}(0,4)$
+
+```{r simdata}
+rm(list=ls())
+set.seed(032210)
+n<-46 				                   # Number of county
+nis<-sample(1:250,n,T)           # Number of patient in each county
+id<-rep(1:n,nis)                 # County ID
+N<-length(id)                    # Number of total patients  
+
+# Covariate
+x1<-rnorm(N)
+x2<-rbinom(N,1,0.5)
+X<-cbind(1,x1,x2)
+p<-ncol(X)
+
+# Fixed Effect Parms
+beta<-c(-0.25,0.65,-0.50)
+
+# Spatial random effect
+data(C)
+A<-C                                            # Adjancency matrix
+D<-apply(A,1,sum)	                              # No. neighbors
+Q<-as.spam(diag(D))-as.spam(A) + diag(.0001,n)
+
+varb<-truevarb<-2
+taub<-truetaub<-1/varb                          # precision in ICAR
+covb<-varb*solve(Q)      
+b<-c(mvtnorm::rmvnorm(1,sigma=covb))                 
+trueb<-b-mean(b)                               # Center for identifiability 
+
+# Error variance
+sigmae<-4
+
+# Response
+mu<-X%*%beta+rep(b-mean(b),nis)
+y<-rnorm(N,mu,sqrt(sigmae))                 
+```
+
+# South Carolina (SC) Map
+
+```{r fig}
+dat<-data.frame(countyid=1:n,
+                ymean=tapply(y,id,mean))
+
+scfips<-c("45001","45003","45005","45007","45009",
+          "45011","45013","45015","45017","45019","45021",
+          "45023","45025","45027","45029","45031","45033",
+          "45035","45037","45039","45041","45043","45045",
+          "45047","45049","45051","45053","45055","45057",
+          "45059","45061","45063","45065","45067","45069",
+          "45071","45073","45075","45077","45079","45081",
+          "45083","45085","45087","45089","45091")
+
+dat$fips<-scfips
+dat$GEOID<-as.character(dat$fips)
+sc_counties_map <- counties(state = c('South Carolina'))
+sc_data <- left_join(sc_counties_map, dat, by = 'GEOID')
+pal <- brewer.pal(5,"BuGn")  # specify the palette colors
+tm_shape(sc_data)+
+  tm_fill(c("ymean"), midpoint = c(NA), title = c(expression(paste(""))), palette = pal, style = "quantile")+
+  tm_facets(free.scales = TRUE, nrow = 1)+
+  tm_layout(title = "Quintile Map",
+            title.snap.to.legend = TRUE,
+            title.size = 0.8,
+            title.position = c("right", "bottom"),
+            legend.outside = FALSE,
+            legend.position = c(0.75, 0.88),
+            legend.text.size = 0.5,
+            main.title.fontface = "bold",
+            main.title.position = "center")+
+  tm_borders(alpha = 0.3, lwd = 1)
+```
+
+
+# Nimble Code
+
+- ICAR prior in Nimble
+
+  - dcar_normal(adj,weights,num,tau,zero_mean)
+  
+    - adj: vector of indices of the adjacent locations (neighbors) of each spatial location
+    
+    - weights: vector of symmetric unnormalized weights associated with each pair of adjacent locations, of the same length as adj. If omitted, all weights are taken to be one.
+    
+    - num: vector giving the number of neighboring locations of each spatial location, with length equal to the total number of locations.
+    
+    - tau: scalar precision of the Gaussian CAR prior.
+    
+    - zero_mean: if 1, then during MCMC sampling, the mean of all locations is set to zero at each MCMC iteration (for identifiability)
+
+```{r nimble}
+#--------#
+# Nimble #
+#--------#
+# Adjacency matrix for spatial effect
+tmp<-as.carAdjacency(A)
+adj<-tmp$adj              # Adjacency vectors
+weights<-tmp$weights      # Weights
+num<-tmp$num              # Number of neighbors for each county
+L<-length(adj)
+
+#--------#
+# Nimble #
+#--------#
+code <- nimbleCode({
+  for(i in 1:N) {
+    y[i] ~ dnorm(mu[i], tau = taue)
+    mu[i]<-inprod(beta[1:p],X[i,1:p])+s[id[i]]
+  }
+  for (k in 1:p){beta[k]~dnorm(0,sd=100)}  
+  taub  ~ dgamma(0.0001,0.0001)               # ICAR precision
+  varb <- 1/taub  
+  taue  ~ dgamma(0.0001,0.0001)               # error precision 
+  vare <- 1/taue
+  s[1:n] ~ dcar_normal(adj=adj[1:L],weights=weights[1:L],
+                       num=num[1:n],tau=taub, 
+                       zero_mean=1)           # ICAR prior
+  # zero_mean=1: zero-mean constraint
+})
+constants <- list(N=N, n = n, p=p, L=L, id=id,adj=adj,weights=weights,num=num)
+data <- list(y = y, X=X)
+inits <- list(beta=rep(0,p),taub=1,taue=1, s=rnorm(n))
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+# Configure and Compile Model
+
+```{r config}
+modelConf <- configureMCMC(model, print = TRUE)
+modelConf$addMonitors("varb","vare","s")
+Cmodel <- compileNimble(model)
+```
+
+# Compile MCMC Object
+
+```{r compile}
+modelMCMC <- buildMCMC(modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+```
+
+# Run MCMC
+
+```{r mcmc}
+niter <- 10000     # Number of iterations
+burn  <- niter/2   # Number of burn-ins
+thin  <- 5         # Thinning interval   
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,thin = thin,summary = TRUE)
+```
+
+# Extract Sample
+
+```{r sample}
+samples$summary[c("beta[1]","beta[2]","beta[3]","taue","vare","varb","taub"),]  # estimate table
+```
+
+# MCMC Diagnostics
+
+```{r diag,eval=FALSE}
+# Check MCMC plot
+out<-samples$samples[,c("beta[1]","beta[2]","beta[3]","taue","vare","varb","taub")]
+mcmcplot(out,filename = "output")
+```
+
+# Observed and Expected Map
+
+```{r fit, warning=FALSE,message=FALSE}
+dat<-data.frame(countyid=1:n,
+                ymean=tapply(y,id,mean))
+ms<-apply(samples$samples[,4:49],2,mean) # Posterior spatial effects
+dat$ms<-ms
+
+scfips<-c("45001","45003","45005","45007","45009",
+          "45011","45013","45015","45017","45019","45021",
+          "45023","45025","45027","45029","45031","45033",
+          "45035","45037","45039","45041","45043","45045",
+          "45047","45049","45051","45053","45055","45057",
+          "45059","45061","45063","45065","45067","45069",
+          "45071","45073","45075","45077","45079","45081",
+          "45083","45085","45087","45089","45091")
+
+dat$fips<-scfips
+dat$GEOID<-as.character(dat$fips)
+sc_counties_map <- counties(state = c('South Carolina'))
+sc_data <- left_join(sc_counties_map, dat, by = 'GEOID')
+pal <- brewer.pal(5,"BuGn")  # specify the palette colors
+
+tm_shape(sc_data)+
+  tm_fill(c("ymean"), midpoint = c(NA), title = c(expression(paste(""))), palette = pal, style = "quantile")+
+  tm_facets(free.scales = TRUE, nrow = 1)+
+  tm_layout(title = "Quintile Map: Observed Mean Outcome",
+            title.snap.to.legend = TRUE,
+            title.size = 0.8,
+            title.position = c("right", "bottom"),
+            legend.outside = FALSE,
+            legend.position = c(0.75, 0.88),
+            legend.text.size = 0.5,
+            main.title.fontface = "bold",
+            main.title.position = "center")+
+  tm_borders(alpha = 0.3, lwd = 1)
+
+tm_shape(sc_data)+
+  tm_fill(c("ms"), midpoint = c(NA), title = c(expression(paste(""))), palette = pal, style = "quantile")+
+  tm_facets(free.scales = TRUE, nrow = 1)+
+  tm_layout(title = "Quintile Map: Posterior Random Effects",
+            title.snap.to.legend = TRUE,
+            title.size = 0.8,
+            title.position = c("right", "bottom"),
+            legend.outside = FALSE,
+            legend.position = c(0.75, 0.88),
+            legend.text.size = 0.5,
+            main.title.fontface = "bold",
+            main.title.position = "center")+
+  tm_borders(alpha = 0.3, lwd = 1)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

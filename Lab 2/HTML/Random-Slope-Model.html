@@ -1504,15 +1504,15 @@ Y_{n2}\\
 \vdots\\
 Y_{nn_n}
 \end{bmatrix}_{N\times1}=\begin{bmatrix}
-1 &amp; \boldsymbol{t}_{11}^T\\
-1 &amp;\boldsymbol{t}_{12}^T\\
+1 &amp; t_{11}\\
+1 &amp;t_{12}\\
 \vdots &amp;\vdots\\
-1 &amp;\boldsymbol{t}_{1n_1}^T\\
+1 &amp;t_{1n_1}\\
 \vdots &amp;\vdots\\
-1 &amp;\boldsymbol{t}_{n1}^T\\
-1 &amp;\boldsymbol{t}_{n2}^T\\
+1 &amp;t_{n1}\\
+1 &amp;t_{n2}\\
 \vdots &amp;\vdots\\
-1 &amp; \boldsymbol{t}_{nn_n}^T
+1 &amp; t_{nn_n}
 \end{bmatrix}_{N\times2}\begin{bmatrix} \beta_0  \\ \beta_1
 \end{bmatrix}_{2\times1}+\begin{bmatrix}
 b_{11}\\
@@ -1636,8 +1636,8 @@ slope</p></li>
 vector, such as <span class="math inline">\((
 \underbrace{1,1,\ldots,1}_{12},\underbrace{2,2,\ldots,2}_{12},\ldots,\underbrace{100,100,\ldots,100}_{12})_{1200\times1}\)</span></p></li>
 </ul>
-<div id="assume-random-intercept-and-slope-are-independet" class="section level2">
-<h2>Assume Random Intercept and Slope are Independet</h2>
+<div id="assume-random-intercept-and-slope-are-independent" class="section level2">
+<h2>Assume Random Intercept and Slope are Independent</h2>
 <pre class="r"><code>#--------#
 # Nimble #
 #--------#
@@ -1668,8 +1668,8 @@ inits &lt;- list(beta0=0,beta1=0,b1=rep(0,n),b2&lt;-rep(0,n),taub1=1,taub2=1,tau
 # nimbleModel: check code specification is correct
 model &lt;- nimbleModel(code, constants = constants, data = data, inits = inits)</code></pre>
 </div>
-<div id="assume-random-intercept-and-slope-are-dependet" class="section level2">
-<h2>Assume Random Intercept and Slope are Dependet</h2>
+<div id="assume-random-intercept-and-slope-are-dependent" class="section level2">
+<h2>Assume Random Intercept and Slope are Dependent</h2>
 <pre class="r"><code>#--------#
 # Nimble #
 #--------#
@@ -1679,7 +1679,7 @@ code &lt;- nimbleCode({
     mu[i] &lt;- beta0+beta1*t[i]+b1[id[i]]+b2[id[i]]*t[i]
   }
   # Random effect
-  # update b=(b1i,b2i)^T ~ MVNORM(0,covb)
+  # update bi=(b1i,b2i)^T ~ MVNORM(0,covb)
   for (j in 1:n) {
     B[j,1:2] ~ dmnorm(B0[1:2],cov=covb[1:2,1:2]) # N(0,sigmab) 
     b1[j]&lt;-B[j,1]

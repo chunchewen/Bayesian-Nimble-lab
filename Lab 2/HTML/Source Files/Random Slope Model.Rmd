@@ -1,0 +1,252 @@
+---
+title: "Random Slope Model"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Model Specification 
+
+-   See Lecture 24 
+
+-   Observation level: Let $Y_{ij}$ be the outcome of subject $i$
+    ($i=1,\ldots,n$) at $j$-th ($j=1,\ldots,n_i$) time:
+    $$Y_{ij}=\beta_0+\beta_1t_{ij}+b_{1i}+b_{2i}t_{ij}+e_{ij},$$ where
+    $t_{ij}\in \{1,2,\ldots,T\}$. We assume
+    $\boldsymbol{b}=(b_{1i},b_{2i})^T_{i}\overset{\text{iid}}{\sim}\text{N}_2(0,\Sigma_b)$,
+    $e_{ij}\overset{\text{iid}}{\sim}\text{N}(0,\sigma^2_e)$
+
+-   Combining all observations:
+    $$\boldsymbol{Y}=\boldsymbol{X}\boldsymbol{\beta}+\boldsymbol{Z}\boldsymbol{b}+\boldsymbol{e},$$
+    where
+    $\boldsymbol{Y}=(Y_{11},Y_{12},\ldots,Y_{1n_1},\ldots,Y_{n1},Y_{n2},\ldots,Y_{nn_n})_{N\times1}^T$
+    and $\boldsymbol{b}=(b_{11},b_{21},b_{12},b_{22},\ldots,b_{1n},b_{2n})_{2n\times1}^T$
+
+-   If we write out the equation above: $$\begin{bmatrix}
+    Y_{11}\\
+    Y_{12}\\
+    \vdots\\
+    Y_{1n_1}\\
+    \vdots\\
+    Y_{n1}\\
+    Y_{n2}\\
+    \vdots\\
+    Y_{nn_n}
+    \end{bmatrix}_{N\times1}=\begin{bmatrix}
+    1 & t_{11}\\
+    1 &t_{12}\\
+    \vdots &\vdots\\
+    1 &t_{1n_1}\\
+    \vdots &\vdots\\
+    1 &t_{n1}\\
+    1 &t_{n2}\\
+    \vdots &\vdots\\
+    1 & t_{nn_n}
+    \end{bmatrix}_{N\times2}\begin{bmatrix} \beta_0  \\ \beta_1 \end{bmatrix}_{2\times1}+\begin{bmatrix}
+    b_{11}\\
+    b_{11}\\
+    \vdots\\
+    b_{11}\\
+    \vdots\\
+    b_{1n}\\
+    b_{1n}\\
+    \vdots\\
+    b_{1n}
+    \end{bmatrix}_{N\times1}+\begin{bmatrix}
+    b_{21}t_{11}\\
+    b_{21}t_{12}\\
+    \vdots\\
+    b_{21}t_{1n_1}\\
+    \vdots\\
+    b_{2n}t_{n1}\\
+    b_{2n}t_{n2}\\
+    \vdots\\
+    b_{2n}t_{nn_n}
+    \end{bmatrix}_{N\times1}+
+    \begin{bmatrix}
+    e_{11}\\
+    e_{12}\\
+    \vdots\\
+    e_{1n_1}\\
+    \vdots\\
+    e_{n1}\\
+    e_{n2}\\
+    \vdots\\
+    e_{nn_n}
+    \end{bmatrix}_{N\times1}$$
+
+```{r setup,warning=FALSE,message=FALSE}
+library(mcmcplots)      
+library(nimble)
+library(lme4)
+library(spam)
+```
+
+# Simulate Data
+
+Simulate data from Equation: 
+
+$$Y_{ij}=\beta_0+\beta_1t_{ij}+b_{1i}+b_{2i}t_{ij}+e_{ij}, ~~~ i=1,\ldots,100; j=1,..12,$$
+
+where $(\beta_0,\beta_1)^T=(0.25,-0.50)^T$;
+$\boldsymbol{b}_{i}=(b_{1i},b_{2i})^T \overset{iid}{\sim}\text{N}_2\left(\begin{bmatrix}0\\0\end{bmatrix},\begin{bmatrix}0.50 & 0.10 \\ 0.10 & 0.15\end{bmatrix}\right)$;
+$e_{ij} \overset{iid}{\sim}\text{N}(0,4)$
+
+```{r simdata}
+set.seed(04142022)
+n<-100                           # total subjects
+nis<-rep(12,n)                   # repeated measure per subject (balanced)
+id<-rep(1:n,nis)                 # id
+N<-length(id)                    # total observations
+
+# Fixed Effects
+t<-rep(0,N)
+for (i in 1:n) t[id==i]<-0:(nis[i]-1)# time variable: t=0,1,...,11
+X<-cbind(1,t)                   # design matrix 
+truebeta<-beta<-c(.25,-.5)      # true beta 
+p<-ncol(X)                      # number of parameters
+
+
+# Random Effects
+truesigmab<-sigmab<-matrix(c(.50,.10,
+                             .10,.15),2,2,byrow = T) # Allow cor. b/t random interept/slope
+trueB<-rmvnorm(n,sigma=truesigmab)
+
+trueb1<-b1<-trueB[,1]           # true random intercept 
+trueb2<-b2<-trueB[,2]           # true random slope     
+
+B1<-rep(b1,nis)
+B2<-rep(b2,nis)
+
+# Precision Error
+truesigmae<-sigmae<-4
+
+# Outcome
+mu<-X%*%beta+B1+B2*t
+y<-rnorm(N,mu,sqrt(sigmae))                
+```
+
+
+# Frequentist Approach
+```{r freq}
+# Frequentist approach
+m <- lmer(y~t+(1+t|id))
+summary(m)
+```
+
+# Nimble Code
+
+- $\boldsymbol{b}_1=(b_{11},b_{12},\ldots,b_{1,100})^T$ is a $100\times1$ vector for random intercept
+
+- $\boldsymbol{b}_2=(b_{21},b_{22},\ldots,b_{2,100})^T$ is a $100\times1$ vector for random slope
+
+- ID variable is a $1200\times1$ vector, such as $( \underbrace{1,1,\ldots,1}_{12},\underbrace{2,2,\ldots,2}_{12},\ldots,\underbrace{100,100,\ldots,100}_{12})_{1200\times1}$
+
+## Assume Random Intercept and Slope are Independent
+```{r nimble0, eval=FALSE}
+#--------#
+# Nimble #
+#--------#
+code <- nimbleCode({
+  for(i in 1:N) {
+    y[i] ~ dnorm(mu[i],tau=taue)
+    mu[i] <- beta0+beta1*t[i]+b1[id[i]]+b2[id[i]]*t[i]
+  }
+  # Random effect
+  # update b1i ~ N(0,1/taub1)
+  for(j in 1:n){b1[j] ~ dnorm(0,tau=taub1)}  # Random intercept
+  # update b2i ~ N(0,1/taub2)
+  for(j in 1:n){b2[j] ~ dnorm(0,tau=taub2)}  # Random slope
+  # Prior 
+  taub1  ~ dgamma(0.0001,0.0001)            # Random intercept precision 
+  varb1  <- 1/taub1
+  taub2  ~ dgamma(0.0001,0.0001)            # Random slope precision 
+  varb2  <- 1/taub2
+  beta0  ~ dnorm(0, sd = 100)
+  beta1  ~ dnorm(0, sd = 100)
+  taue ~ dgamma(0.001,0.001)
+  vare <- 1/taue         
+})
+constants <- list(N=N, n = n,id=id)
+data <- list(y = y, t = t)
+inits <- list(beta0=0,beta1=0,b1=rep(0,n),b2<-rep(0,n),taub1=1,taub2=1,taue=1)
+
+# nimbleModel: check code specification is correct
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+## Assume Random Intercept and Slope are Dependent
+```{r nimble}
+#--------#
+# Nimble #
+#--------#
+code <- nimbleCode({
+  for(i in 1:N) {
+    y[i] ~ dnorm(mu[i],tau=taue)
+    mu[i] <- beta0+beta1*t[i]+b1[id[i]]+b2[id[i]]*t[i]
+  }
+  # Random effect
+  # update bi=(b1i,b2i)^T ~ MVNORM(0,covb)
+  for (j in 1:n) {
+    B[j,1:2] ~ dmnorm(B0[1:2],cov=covb[1:2,1:2]) # N(0,sigmab) 
+    b1[j]<-B[j,1]
+    b2[j]<-B[j,2]}
+  # Prior 
+  covb[1:2,1:2] ~ dinvwish(C0[1:2,1:2],k)        # IW(diag(2),3)    
+  beta0  ~ dnorm(0, sd = 100)
+  beta1  ~ dnorm(0, sd = 100)
+  taue ~ dgamma(0.001,0.001)
+  vare <- 1/taue         
+})
+constants <- list(N=N, n = n,id=id, B0=rep(0,2), C0=diag(2),k=3)
+data <- list(y = y, t = t)
+inits <- list(beta0=0,beta1=0,covb=diag(2),B=matrix(0,n,2),taue=1)
+
+# nimbleModel: check code specification is correct
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+# Configure and Compile Model
+
+```{r config}
+modelConf <- configureMCMC(model, print = TRUE)
+modelConf$addMonitors("vare") # add monitor error variance
+Cmodel <- compileNimble(model)
+```
+
+# Compile MCMC Object
+
+```{r compile}
+modelMCMC <- buildMCMC(modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+```
+
+# Run MCMC
+
+```{r mcmc}
+niter <- 20000     # Number of iterations
+burn  <- niter/2   # Number of burn-ins
+thin  <- 20        # Thinning interval   
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,thin = thin,summary = TRUE)
+```
+
+# Extract Sample
+
+```{r sample}
+samples$summary  # estimate table
+```
+
+# MCMC Diagnostics
+
+```{r diag,eval=FALSE}
+# Check MCMC plot
+out<-samples$samples[,c("beta0","beta1",
+                        "covb[1, 1]","covb[2, 2]","vare","taue")]
+mcmcplot(out,filename = "output")
+```
+

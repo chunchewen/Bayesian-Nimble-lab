@@ -1,0 +1,198 @@
+---
+title: "Random Intercept Model"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Model Specification 
+
+-   See Lecture 23 Page 8
+
+-   Observation level: Let $Y_{ij}$ be the outcome of subject $i$
+    ($i=1,\ldots,n$) at $j$-th ($j=1,\ldots,n_i$) time:
+    $$Y_{ij}=\beta_0+\beta_1t_{ij}+b_{i}+e_{ij},$$ where
+    $t_{ij}\in \{1,2,\ldots,T\}$. We assume
+    $b_{i}\overset{\text{iid}}{\sim}\text{N}(0,\sigma^2_b)$,
+    $e_{ij}\overset{\text{iid}}{\sim}\text{N}(0,\sigma^2_e)$
+
+-   Combining all observations:
+    $$\boldsymbol{Y}=\boldsymbol{X}\boldsymbol{\beta}+\boldsymbol{Z}\boldsymbol{b}+\boldsymbol{e},$$
+    where
+    $\boldsymbol{Y}=(Y_{11},Y_{12},\ldots,Y_{1n_1},\ldots,Y_{n1},Y_{n2},\ldots,Y_{nn_n})_{N\times1}^T$
+    and $\boldsymbol{b}=(b_1,\ldots,b_n)_{n\times1}^T$
+
+-   If we write out the equation above: $$\begin{bmatrix}
+    Y_{11}\\
+    Y_{12}\\
+    \vdots\\
+    Y_{1n_1}\\
+    \vdots\\
+    Y_{n1}\\
+    Y_{n2}\\
+    \vdots\\
+    Y_{nn_n}
+    \end{bmatrix}_{N\times1}=\begin{bmatrix}
+    1 & t_{11}\\
+    1 & t_{12}\\
+    \vdots &\vdots\\
+    1 &t_{1n_1}\\
+    \vdots &\vdots\\
+    1 &t_{n1}\\
+    1 &t_{n2}\\
+    \vdots &\vdots\\
+    1 & t_{nn_n}
+    \end{bmatrix}_{N\times2}\begin{bmatrix} \beta_0  \\ \beta_1 \end{bmatrix}_{2\times1}+\begin{bmatrix}
+    b_1\\
+    b_1\\
+    \vdots\\
+    b_1\\
+    \vdots\\
+    b_n\\
+    b_n\\
+    \vdots\\
+    b_n
+    \end{bmatrix}_{N\times1}+\begin{bmatrix}
+    e_{11}\\
+    e_{12}\\
+    \vdots\\
+    e_{1n_1}\\
+    \vdots\\
+    e_{n1}\\
+    e_{n2}\\
+    \vdots\\
+    e_{nn_n}
+    \end{bmatrix}_{N\times1}$$
+
+```{r setup,warning=FALSE,message=FALSE}
+library(mcmcplots)      
+library(nimble)
+library(lme4)
+```
+
+# Simulate Data
+
+Simulate data from Equation: 
+
+$$Y_{ij}=\beta_0+\beta_1t_{ij}+b_{i}+e_{ij}, ~~~ i=1,\ldots,100; j=1,..12,$$
+
+where $(\beta_0,\beta_1)^T=(0.25,-0.50)^T$;
+$b_{i} \overset{iid}{\sim}\text{N}(0,0.5)$;
+$e_{ij} \overset{iid}{\sim}\text{N}(0,4)$
+
+```{r simdata}
+
+# Generate Data
+set.seed(04142022)
+n<-100                           # total subjects
+nis<-rep(12,n)                   # repeated measure per subject (balanced)
+id<-rep(1:n,nis)                 # id = (1,1,..,1,2,2,...,2,...,n,n,...,n)
+N<-length(id)                    # total observations
+
+
+# Fixed Effects
+t<-rep(0,N)
+for (i in 1:n) t[id==i]<-0:(nis[i]-1)# time variable
+X<-cbind(1,t)                        # design matrix 
+truebeta<-beta<-c(.25,-.5)           # true beta 
+p<-ncol(X)                           # number of parameters
+
+# Random effect variance
+truesigmab<-sigmab<-0.5
+trueB<-b<-rnorm(n,sd=sqrt(truesigmab))
+B<-rep(b,nis)
+
+
+# Error variance
+truesigmae<-sigmae<-4
+
+# Outcome Model
+mu<-X%*%beta+B
+y<-rnorm(N,mu,sqrt(sigmae))                  
+```
+
+
+# Frequentist Approach
+```{r freq}
+# Frequentist approach
+m <- lmer(y~t+(1|id))
+summary(m)
+```
+
+# Nimble Code
+
+- $\boldsymbol{b}=(b_1,b_2,\ldots,b_{100})^T$ is a $100\times1$ vector
+
+- ID variable is a $1200\times1$ vector, such as $( \underbrace{1,1,\ldots,1}_{12},\underbrace{2,2,\ldots,2}_{12},\ldots,\underbrace{100,100,\ldots,100}_{12})_{1200\times1}$
+
+```{r nimble}
+#--------#
+# Nimble #
+#--------#
+code <- nimbleCode({
+  for(i in 1:N) {
+    y[i] ~ dnorm(mu[i],tau=taue)
+    mu[i] <- beta0+beta1*t[i]+b[id[i]]
+  }
+  # Random Effect
+  for(j in 1:n){b[j] ~ dnorm(0,tau=taub)}  # Random effects
+  # Prior 
+  taub  ~ dgamma(0.0001,0.0001)            # Random effect precision 
+  taue  ~ dgamma(0.0001,0.0001)            # Error precision
+  beta0  ~ dnorm(0, sd = 100)              
+  beta1  ~ dnorm(0, sd = 100)
+  varb <- 1/taub                           # Random effect variance 
+  vare <- 1/taue                           # Error variance
+})
+
+constants <- list(N=N, n = n,id=id)        # Note: ID variable
+data <- list(y = y, t = t)
+inits <- list(beta0=0,beta1=0,b=rep(0,n),taub=1,taue=1)
+
+# nimbleModel: check code specification is correct
+model <- nimbleModel(code, constants = constants, data = data, inits = inits)
+```
+
+# Configure and Compile Model
+
+```{r config}
+modelConf <- configureMCMC(model, print = TRUE)
+modelConf$addMonitors("varb","vare") # add monitor random effect/error variance
+Cmodel <- compileNimble(model)
+```
+
+# Compile MCMC Object
+
+```{r compile}
+modelMCMC <- buildMCMC(modelConf)
+modelMCMC <- compileNimble(modelMCMC, project = model)
+```
+
+# Run MCMC
+
+```{r mcmc}
+niter <- 10000     # Number of iterations
+burn  <- niter/2   # Number of burn-ins
+thin  <- 20        # Thinning interval   
+set.seed(1)
+samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,thin = thin,summary = TRUE)
+```
+
+# Extract Sample
+
+```{r sample}
+samples$summary  # estimate table
+```
+
+# MCMC Diagnostics
+
+```{r diag,eval=FALSE}
+# Check MCMC plot
+out<-samples$samples[,c("beta0","beta1","taub","varb","taue","vare")]
+mcmcplot(out,filename = "output")
+```
+
