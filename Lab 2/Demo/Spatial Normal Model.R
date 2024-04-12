@@ -99,7 +99,7 @@ samples <- runMCMC(modelMCMC, niter = niter,nburnin = burn, nchains = 1,thin = t
 
 
 # Extract Sample
-samples$summary[47:53,]  # estimate table
+samples$summary[c("beta[1]","beta[2]","beta[3]","taue","vare","varb","taub"),]  # estimate table
 
 # MCMC Diagnostics
 out<-samples$samples[,c("beta[1]","beta[2]","beta[3]","taue","vare","varb","taub")]
